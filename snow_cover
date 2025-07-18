@@ -1,0 +1,109 @@
+# Adonis Engel July 2025
+# Script designed to give a relative snow cover value for the images provided
+
+import cv2
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import pandas as pd
+from datetime import datetime
+from pathlib import Path
+from PIL import Image
+from PIL.ExifTags import TAGS
+
+# Load Site Prefixes and Coordinates from Excel Sheet
+site_info_df = pd.read_excel("1854TA_SnowStation_Locations.xlsx", usecols="B:D", header=None)
+site_info_df.columns = ["site_prefix", "lat", "lon"]
+
+site_lookup = {}
+for _, row in site_info_df.iterrows():
+    prefix = str(row['site_prefix']).upper().strip()
+    site_lookup[prefix] = {
+        "site_name": prefix,
+        "lat": row['lat'],
+        "lon": row['lon']
+    }
+
+# EXIF Timestamp Extractor
+def extract_exif_timestamp(image_path):
+    try:
+        img = Image.open(image_path)
+        exif = img._getexif()
+        if not exif:
+            return ""
+        for tag, value in exif.items():
+            if TAGS.get(tag) == "DateTimeOriginal":
+                return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
+    except Exception as e:
+        print(f"[!] EXIF read failed for {image_path}: {e}")
+    return ""
+
+# Define Image Folder PATH
+input_root = Path(r"C:\Users\adone\Downloads\OneDrive_1_6-13-2025")  # Unzipped folder path
+output_mask_folder = Path("snow_masks")
+output_mask_folder.mkdir(parents=True, exist_ok=True)
+
+# Loop Through All Images
+results = []
+image_extensions = ('.jpg', '.jpeg', '.png')
+
+for image_path in input_root.rglob("*"):
+    if image_path.suffix.lower() not in image_extensions:
+        continue
+
+    img = cv2.imread(str(image_path))
+    if img is None:
+        print(f"[!] Could not read {image_path}")
+        continue
+
+    # Resize for consistency
+    img = cv2.resize(img, (640, 480))
+
+    # Crop top 25% for sky
+    h = img.shape[0]
+    roi = img[int(h * 0.25):, :]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    # Define snow color range
+    lower_snow = np.array([0, 0, 200])
+    upper_snow = np.array([180, 50, 255])
+    snow_mask = cv2.inRange(hsv, lower_snow, upper_snow)
+
+    # Expand mask to full image height
+    full_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    full_mask[int(h * 0.25):, :] = snow_mask
+
+    snow_pixels = np.sum(full_mask > 0)
+    total_pixels = full_mask.size
+    snow_percent = (snow_pixels / total_pixels) * 100
+
+    # Save binary snow mask
+    relative_path = image_path.relative_to(input_root)
+    mask_name = relative_path.with_suffix('').as_posix().replace('/', '_') + "_mask.png"
+    mask_path = output_mask_folder / mask_name
+    cv2.imwrite(str(mask_path), full_mask)
+
+    # Extract timestamp from EXIF
+    timestamp = extract_exif_timestamp(image_path)
+
+    # Extract site prefix from parent folder
+    parent_folder = image_path.parts[-2]
+    prefix = parent_folder[:3].upper()
+    site_data = site_lookup.get(prefix, {"site_name": "", "lat": "", "lon": ""})
+
+    # Append to results
+    results.append({
+        "filename": str(relative_path),
+        "timestamp": timestamp,
+        "site_code": prefix,
+        "site_name": site_data['site_name'],
+        "lat": site_data['lat'],
+        "lon": site_data['lon'],
+        "snow_percent": round(snow_percent, 2),
+        "mask_path": str(mask_path)
+    })
+
+# Save Results to CSV 
+df = pd.DataFrame(results)
+df.to_csv("snow_mask_summary.csv", index=False)
+print(" All stills processed. Output saved to snow_mask_summary.csv.")
