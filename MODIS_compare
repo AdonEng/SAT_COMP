@@ -1,0 +1,108 @@
+# Adonis Engel
+# Script to read CSV and TIFF files and produce a value of relative correlation
+
+import rasterio
+from rasterio.warp import transform
+import pandas as pd
+import numpy as np
+import os
+
+# CONFIG (Placeholder)
+summary_csv = "snow_mask_summary.csv"
+modis_folder = "MODIS_TIFFS"
+viirs_folder = "VIIRS_TIFFS"
+landsat_folder = "LANDSAT_TIFFS"
+output_csv = "snow_comparison_results.csv"
+
+# Sensor-specific thresholds or codes 
+MODIS_CODES = [200]
+VIIRS_CODES = [200]
+LANDSAT_THRESHOLD = 128  # Assumes you have pre-made binary NDSI masks (0/255)
+
+# Load your processed snow summary
+print("Loading ground observation summary...")
+df = pd.read_csv(summary_csv, parse_dates=["timestamp"])
+
+results = []
+
+# Function to sample any GeoTIFF at lat/lon
+def sample_geotiff_at_point(tiff_path, lon, lat, snow_codes=None, threshold=None):
+    try:
+        with rasterio.open(tiff_path) as src:
+            data = src.read(1)
+            crs = src.crs
+            transform_affine = src.transform
+
+            # Transform from lat/lon to pixel
+            x, y = transform('EPSG:4326', crs, [lon], [lat])
+            row, col = ~transform_affine * (x[0], y[0])
+            row, col = int(row), int(col)
+
+            if (0 <= row < data.shape[0]) and (0 <= col < data.shape[1]):
+                val = data[row, col]
+                if snow_codes:
+                    return 1 if val in snow_codes else 0
+                if threshold is not None:
+                    return 1 if val >= threshold else 0
+                return val
+            else:
+                return None
+    except Exception as e:
+        print(f"[!] Error sampling {tiff_path}: {e}")
+        return None
+
+# Main Processing Loop
+print("Starting satellite data comparison...")
+
+for idx, row in df.iterrows():
+    timestamp = row['timestamp']
+    if pd.isnull(timestamp):
+        continue
+
+    date_str = pd.to_datetime(timestamp).strftime("%Y_%m_%d")
+    lat, lon = row['lat'], row['lon']
+    if pd.isnull(lat) or pd.isnull(lon):
+        continue
+
+    # MODIS (Placeholder)
+    modis_snow = None
+    modis_files = [f for f in os.listdir(modis_folder) if date_str in f and f.endswith('.tif')]
+    if modis_files:
+        modis_path = os.path.join(modis_folder, modis_files[0])
+        modis_snow = sample_geotiff_at_point(modis_path, lon, lat, snow_codes=MODIS_CODES)
+
+    # VIIRS (Placeholder)
+    viirs_snow = None
+    viirs_files = [f for f in os.listdir(viirs_folder) if date_str in f and f.endswith('.tif')]
+    if viirs_files:
+        viirs_path = os.path.join(viirs_folder, viirs_files[0])
+        viirs_snow = sample_geotiff_at_point(viirs_path, lon, lat, snow_codes=VIIRS_CODES)
+
+    # LANDSAT (Placeholder)
+    landsat_snow = None
+    landsat_files = [f for f in os.listdir(landsat_folder) if date_str in f and f.endswith('.tif')]
+    if landsat_files:
+        landsat_path = os.path.join(landsat_folder, landsat_files[0])
+        landsat_snow = sample_geotiff_at_point(landsat_path, lon, lat, threshold=LANDSAT_THRESHOLD)
+
+    # Ground Truth Binary Classification
+    ground_snow = 1 if row['snow_percent'] > 5 else 0
+
+    results.append({
+        "filename": row['filename'],
+        "timestamp": timestamp,
+        "site_code": row['site_code'],
+        "site_name": row['site_name'],
+        "lat": lat,
+        "lon": lon,
+        "ground_snow_percent": row['snow_percent'],
+        "ground_snow_binary": ground_snow,
+        "modis_snow_binary": modis_snow,
+        "viirs_snow_binary": viirs_snow,
+        "landsat_snow_binary": landsat_snow
+    })
+
+# Save Comparison Results
+out_df = pd.DataFrame(results)
+out_df.to_csv(output_csv, index=False)
+print(f"✅ Comparison complete. Results saved to {output_csv}.")
