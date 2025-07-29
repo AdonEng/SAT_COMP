@@ -3,28 +3,32 @@
 
 import cv2
 import numpy as np
-import os
-import matplotlib.pyplot as plt
 import pandas as pd
+import time
+from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
 from PIL.ExifTags import TAGS
 
-# Load Site Prefixes and Coordinates from Excel Sheet
+# CONFIG
+DEMO_MODE = True  # Set to False to process all images
+DEMO_IMAGE = Path(r"D:\Full Data Set\2021-2022\2021-2022\GP12022\WSCT0368.JPG")
+
+# Load site info from Excel
 site_info_df = pd.read_excel("1854TA_SnowStation_Locations.xlsx", usecols="B:D", header=None)
 site_info_df.columns = ["site_prefix", "lat", "lon"]
 
-site_lookup = {}
-for _, row in site_info_df.iterrows():
-    prefix = str(row['site_prefix']).upper().strip()
-    site_lookup[prefix] = {
-        "site_name": prefix,
+site_lookup = {
+    str(row['site_prefix']).upper().strip(): {
+        "site_name": str(row['site_prefix']).upper().strip(),
         "lat": row['lat'],
         "lon": row['lon']
     }
+    for _, row in site_info_df.iterrows()
+}
 
-# EXIF Timestamp Extractor
+# EXIF timestamp extraction
 def extract_exif_timestamp(image_path):
     try:
         img = Image.open(image_path)
@@ -38,60 +42,82 @@ def extract_exif_timestamp(image_path):
         print(f"[!] EXIF read failed for {image_path}: {e}")
     return ""
 
-# Define Image Folder PATH
-input_root = Path(r"C:\Users\adone\Downloads\OneDrive_1_6-13-2025")  # Unzipped folder path
-output_mask_folder = Path("snow_masks")
+# Path setup
+input_root = Path(r"D:\Full Data Set\2021-2022\2021-2022")
+
+# Create an organized output folder next to the images
+output_root = input_root / "snow_analysis_results"
+output_root.mkdir(parents=True, exist_ok=True)
+
+output_mask_folder = output_root / "snow_masks"
 output_mask_folder.mkdir(parents=True, exist_ok=True)
 
-# Loop Through All Images
+output_csv = output_root / "snow_mask_summary.csv"
+
+image_extensions = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
 results = []
-image_extensions = ('.jpg', '.jpeg', '.png')
 
-for image_path in input_root.rglob("*"):
-    if image_path.suffix.lower() not in image_extensions:
-        continue
+# Select image(s) 
+if DEMO_MODE:
+    if DEMO_IMAGE.exists():
+        image_list = [DEMO_IMAGE]
+    else:
+        print("[!] Demo image not found.")
+        image_list = []
+else:
+    image_list = [p for p in input_root.rglob("*") if p.suffix.lower() in image_extensions]
 
+# Process images
+start_time = time.time()
+for image_path in tqdm(image_list, desc="Processing images"):
     img = cv2.imread(str(image_path))
     if img is None:
         print(f"[!] Could not read {image_path}")
         continue
 
-    # Resize for consistency
     img = cv2.resize(img, (640, 480))
-
-    # Crop top 25% for sky
     h = img.shape[0]
-    roi = img[int(h * 0.25):, :]
+    top = int(h * 0.25)
+    bottom = int(h * 0.9)
+    roi = img[top:bottom, :]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-    # Define snow color range
-    lower_snow = np.array([0, 0, 200])
-    upper_snow = np.array([180, 50, 255])
+    lower_snow = np.array([0, 0, 170])
+    upper_snow = np.array([180, 40, 255])
     snow_mask = cv2.inRange(hsv, lower_snow, upper_snow)
 
-    # Expand mask to full image height
-    full_mask = np.zeros(img.shape[:2], dtype=np.uint8)
-    full_mask[int(h * 0.25):, :] = snow_mask
+    # Dynamic area filtering
+    min_area = (snow_mask.shape[0] * snow_mask.shape[1]) * 0.001  # 0.1% of ROI
+    contours, _ = cv2.findContours(snow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours:          
+       if cv2.contourArea(cnt) < min_area:
+            cv2.drawContours(snow_mask, [cnt], -1, 0, -1)
 
-    snow_pixels = np.sum(full_mask > 0)
-    total_pixels = full_mask.size
+    # Morph Smoothing
+    kernel = np.ones((5, 5), np.uint8)
+    snow_mask = cv2.morphologyEx(snow_mask, cv2.MORPH_CLOSE, kernel)
+
+    full_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    full_mask[top:bottom, :] = snow_mask
+
+    snow_pixels = np.sum(snow_mask > 0)
+    total_pixels = snow_mask.size
     snow_percent = (snow_pixels / total_pixels) * 100
 
-    # Save binary snow mask
-    relative_path = image_path.relative_to(input_root)
+    if DEMO_MODE:
+        relative_path = Path(image_path.name)  # just the filename
+    else:
+        relative_path = image_path.relative_to(input_root)
+
     mask_name = relative_path.with_suffix('').as_posix().replace('/', '_') + "_mask.png"
     mask_path = output_mask_folder / mask_name
     cv2.imwrite(str(mask_path), full_mask)
 
-    # Extract timestamp from EXIF
     timestamp = extract_exif_timestamp(image_path)
-
-    # Extract site prefix from parent folder
     parent_folder = image_path.parts[-2]
     prefix = parent_folder[:3].upper()
     site_data = site_lookup.get(prefix, {"site_name": "", "lat": "", "lon": ""})
 
-    # Append to results
     results.append({
         "filename": str(relative_path),
         "timestamp": timestamp,
@@ -103,7 +129,21 @@ for image_path in input_root.rglob("*"):
         "mask_path": str(mask_path)
     })
 
-# Save Results to CSV 
-df = pd.DataFrame(results)
-df.to_csv("snow_mask_summary.csv", index=False)
-print(" All stills processed. Output saved to snow_mask_summary.csv.")
+    # Visual preview
+    if DEMO_MODE:
+        cv2.imwrite("demo_original_preview.png", img)
+        cv2.imwrite("demo_snow_mask_preview.png", full_mask)
+        print("[INFO] Saved preview images: demo_original_preview.png & demo_snow_mask_preview.png")
+
+# Save results + final readout
+if results:
+    pd.DataFrame(results).to_csv(output_csv, index=False)
+    elapsed = time.time() - start_time
+    mode = "DEMO" if DEMO_MODE else "BATCH"
+    print(f"\n Processing complete in {mode} mode.")
+    print(f"   Images processed: {len(results)}")
+    print(f"   Output CSV: snow_mask_summary.csv")
+    print(f"   Mask images saved to: {output_mask_folder.resolve()}")
+    print(f"   Time elapsed: {elapsed:.2f} seconds")
+else:
+    print("\n No images processed. Check your paths or file extensions.")
