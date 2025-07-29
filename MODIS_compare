@@ -1,5 +1,5 @@
 # Adonis Engel
-# Script to read CSV and TIFF files and produce a value of relative correlation
+# Script to read CSV and VIIRS TIFF files then produce a value of relative correlation
 
 import rasterio
 from rasterio.warp import transform
@@ -7,17 +7,14 @@ import pandas as pd
 import numpy as np
 import os
 
-# CONFIG (Placeholder)
+# CONFIG
 summary_csv = "snow_mask_summary.csv"
-modis_folder = "MODIS_TIFFS"
 viirs_folder = "VIIRS_TIFFS"
-landsat_folder = "LANDSAT_TIFFS"
 output_csv = "snow_comparison_results.csv"
 
-# Sensor-specific thresholds or codes 
-MODIS_CODES = [200]
+# Sensor-specific thresholds or codes
 VIIRS_CODES = [200]
-LANDSAT_THRESHOLD = 128  # Assumes you have pre-made binary NDSI masks (0/255)
+
 
 # Load your processed snow summary
 print("Loading ground observation summary...")
@@ -64,26 +61,12 @@ for idx, row in df.iterrows():
     if pd.isnull(lat) or pd.isnull(lon):
         continue
 
-    # MODIS (Placeholder)
-    modis_snow = None
-    modis_files = [f for f in os.listdir(modis_folder) if date_str in f and f.endswith('.tif')]
-    if modis_files:
-        modis_path = os.path.join(modis_folder, modis_files[0])
-        modis_snow = sample_geotiff_at_point(modis_path, lon, lat, snow_codes=MODIS_CODES)
-
-    # VIIRS (Placeholder)
+    # VIIRS
     viirs_snow = None
     viirs_files = [f for f in os.listdir(viirs_folder) if date_str in f and f.endswith('.tif')]
     if viirs_files:
         viirs_path = os.path.join(viirs_folder, viirs_files[0])
         viirs_snow = sample_geotiff_at_point(viirs_path, lon, lat, snow_codes=VIIRS_CODES)
-
-    # LANDSAT (Placeholder)
-    landsat_snow = None
-    landsat_files = [f for f in os.listdir(landsat_folder) if date_str in f and f.endswith('.tif')]
-    if landsat_files:
-        landsat_path = os.path.join(landsat_folder, landsat_files[0])
-        landsat_snow = sample_geotiff_at_point(landsat_path, lon, lat, threshold=LANDSAT_THRESHOLD)
 
     # Ground Truth Binary Classification
     ground_snow = 1 if row['snow_percent'] > 5 else 0
@@ -97,12 +80,11 @@ for idx, row in df.iterrows():
         "lon": lon,
         "ground_snow_percent": row['snow_percent'],
         "ground_snow_binary": ground_snow,
-        "modis_snow_binary": modis_snow,
         "viirs_snow_binary": viirs_snow,
-        "landsat_snow_binary": landsat_snow
     })
 
 # Save Comparison Results
 out_df = pd.DataFrame(results)
 out_df.to_csv(output_csv, index=False)
-print(f"✅ Comparison complete. Results saved to {output_csv}.")
+print(f" Comparison complete. Results saved to {output_csv}.")
+
