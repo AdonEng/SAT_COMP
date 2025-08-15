@@ -6,49 +6,31 @@ from rasterio.warp import transform
 import pandas as pd
 import numpy as np
 import os
+from datetime import datetime
 
 # CONFIG
 summary_csv = "snow_mask_summary.csv"
-viirs_folder = "VIIRS_TIFFS"
+viirs_folder = r"C:\Users\Public\EarthData\output"
 output_csv = "snow_comparison_results.csv"
 
-# Sensor-specific thresholds or codes
-VIIRS_CODES = [200]
+date.strftime("%Y%j")  # e.g., 2025-07-24 -> "2025205"
 
-
-# Load your processed snow summary
 print("Loading ground observation summary...")
-df = pd.read_csv(summary_csv, parse_dates=["timestamp"])
+df = pd.read_csv(summary_csv)
 
 results = []
 
-# Function to sample any GeoTIFF at lat/lon
-def sample_geotiff_at_point(tiff_path, lon, lat, snow_codes=None, threshold=None):
-    try:
-        with rasterio.open(tiff_path) as src:
-            data = src.read(1)
-            crs = src.crs
-            transform_affine = src.transform
+with rasterio.open(tiff_path) as src:
+    data = src.read(1)
+    crs = src.crs
+    transform_affine = src.transform
 
-            # Transform from lat/lon to pixel
-            x, y = transform('EPSG:4326', crs, [lon], [lat])
-            row, col = ~transform_affine * (x[0], y[0])
-            row, col = int(row), int(col)
+    x, y = transform('EPSG:4326', crs, [lon], [lat])
+    row, col = ~transform_affine * (x[0], y[0])
+    row, col = int(row), int(col)
 
-            if (0 <= row < data.shape[0]) and (0 <= col < data.shape[1]):
-                val = data[row, col]
-                if snow_codes:
-                    return 1 if val in snow_codes else 0
-                if threshold is not None:
-                    return 1 if val >= threshold else 0
-                return val
-            else:
-                return None
-    except Exception as e:
-        print(f"[!] Error sampling {tiff_path}: {e}")
-        return None
 
-# Main Processing Loop
+# Processing Loop
 print("Starting satellite data comparison...")
 
 for idx, row in df.iterrows():
@@ -63,12 +45,14 @@ for idx, row in df.iterrows():
 
     # VIIRS
     viirs_snow = None
-    viirs_files = [f for f in os.listdir(viirs_folder) if date_str in f and f.endswith('.tif')]
+    viirs_files = [f for f in os.listdir(viirs_folder) if julian_date_str in f and f.endswith('.tif')]
     if viirs_files:
         viirs_path = os.path.join(viirs_folder, viirs_files[0])
+        print(f"[INFO] Matched {row['filename']} to {viirs_files[0]}")
         viirs_snow = sample_geotiff_at_point(viirs_path, lon, lat, snow_codes=VIIRS_CODES)
+    else:
+        print(f"[WARN] No VIIRS file found for {julian_date_str}")
 
-    # Ground Truth Binary Classification
     ground_snow = 1 if row['snow_percent'] > 5 else 0
 
     results.append({
@@ -87,4 +71,3 @@ for idx, row in df.iterrows():
 out_df = pd.DataFrame(results)
 out_df.to_csv(output_csv, index=False)
 print(f" Comparison complete. Results saved to {output_csv}.")
-
